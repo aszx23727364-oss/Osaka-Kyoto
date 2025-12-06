@@ -335,7 +335,6 @@
         // ====================================================================
 
         let currentPage = 'plan';
-        let userId = 'user-' + Math.random().toString(36).substring(2, 9); // Simple unique ID for LocalStorage
         const LS_PREFIX = 'muji_travel_app_';
 
         // 預設匯率: 1 JPY = 0.21 TWD
@@ -469,42 +468,50 @@
         // II. LOCALSTORAGE UTILS (核心持久化功能)
         // ====================================================================
 
+        // 核心修正 1: 確保每次載入都使用同一個固定的 userId
+        let userId = localStorage.getItem(LS_PREFIX + 'userId');
+        if (!userId) {
+            userId = 'user-' + Math.random().toString(36).substring(2, 9);
+            localStorage.setItem(LS_PREFIX + 'userId', userId);
+        }
+
         /**
          * 從 LocalStorage 載入資料
          * @param {string} key 儲存鍵值
-         * @param {*} defaultValue 如果找不到資料時的預設值
+         * @param {*} defaultValue 如果找不到資料時的預設值 (必須是深拷貝)
          * @returns
          */
         function loadFromLS(key, defaultValue) {
-            // 由於不同類型的數據，在初始載入時需要判斷使用哪種預設值
-            let finalDefaultValue = defaultValue;
-
-            // 如果載入的是 tripInfo，需要確保新加入的 editableTransportGuide 和 foodRecommendations 屬性存在
+            
+            const lsKey = LS_PREFIX + key + '_' + userId;
+            const data = localStorage.getItem(lsKey);
+            
+            // 核心修正 2: 處理 tripInfo 時，使用深拷貝確保結構完整
+            let finalDefaultValue;
             if (key === 'tripInfo') {
-                 // 使用初始的 tripInfo 作為基礎，確保結構完整
+                 // 使用 JSON 技巧進行深拷貝，避免修改到原始的 initialTripInfo
                  finalDefaultValue = JSON.parse(JSON.stringify(initialTripInfo));
+            } else if (key === 'checklistItems') {
+                 finalDefaultValue = JSON.parse(JSON.stringify(defaultValue));
+            } else {
+                 finalDefaultValue = defaultValue;
             }
-            
-            // 讀取本地儲存
-            const data = localStorage.getItem(LS_PREFIX + key + '_' + userId);
-            
+
             if (data === null) return finalDefaultValue;
             
             try {
                 const parsedData = JSON.parse(data);
                 
-                // 針對 tripInfo 進行數據結構的向下相容或檢查
+                // 針對 tripInfo 進行結構性檢查與補全 (向下相容)
                 if (key === 'tripInfo') {
-                    // 確保載入的 tripInfo 結構是完整的（包含 flight, hotel, days）
+                    // 確保載入的數據包含所有必要的子結構，如果沒有則從預設值中補上
                     if (!parsedData.flight || !parsedData.days) {
-                         console.warn("Loaded tripInfo is incomplete, resetting to default structure.");
+                         console.warn(`[LS] Loaded tripInfo for ${userId} is incomplete, resetting core structure.`);
                          return finalDefaultValue;
                     }
-                    // 確保 editableTransportGuide 存在
                     if (!parsedData.editableTransportGuide) {
                         parsedData.editableTransportGuide = finalDefaultValue.transportGuide;
                     }
-                    // 確保 foodRecommendations 存在
                     if (!parsedData.foodRecommendations) {
                         parsedData.foodRecommendations = finalDefaultValue.foodRecommendations;
                     }
@@ -513,9 +520,9 @@
                 return parsedData;
 
             } catch (e) {
-                console.error("Error parsing LS data for key:", key, e);
+                console.error(`[LS] Error parsing LS data for key: ${key}, resetting data.`, e);
                 // 如果解析失敗，返回預設值並清除舊的壞資料
-                localStorage.removeItem(LS_PREFIX + key + '_' + userId);
+                localStorage.removeItem(lsKey);
                 return finalDefaultValue;
             }
         }
@@ -554,25 +561,15 @@
             { id: 12, text: "零食伴手禮清單", checked: false, category: '購物清單' }, 
             { id: 13, text: "電器產品 (吹風機、保溫杯等)", checked: false, category: '購物清單' },
         ];
+        // 確保 checklistItems 即使載入失敗，也能得到一個新的、可操作的深拷貝結構
         let checklistItems = loadFromLS('checklistItems', initialChecklist);
 
         // 確保 memoContent 被正確載入或初始化
         let memoContent = loadFromLS('memoContent', ''); 
 
-        // 核心行程資訊 (可編輯) - 使用 initialTripInfo 作為預設值
+        // 核心行程資訊 (可編輯) - 這是結構最複雜的，必須確保載入穩定
         let tripInfo = loadFromLS('tripInfo', initialTripInfo);
         
-        // 為了相容性，如果載入的 tripInfo 中沒有 editableTransportGuide，則從 initialTripInfo 補上
-        if (!tripInfo.editableTransportGuide) {
-            tripInfo.editableTransportGuide = initialTripInfo.transportGuide; 
-        }
-
-        // 為了相容性，如果載入的 tripInfo 中沒有 foodRecommendations，則從 initialTripInfo 補上
-        if (!tripInfo.foodRecommendations) {
-            tripInfo.foodRecommendations = initialTripInfo.foodRecommendations;
-        }
-
-
         // ====================================================================
         // III. COMMON UTILS 
         // ====================================================================
@@ -704,9 +701,9 @@
          * 渲染行程單一細項的 HTML
          */
         function getTimelineItemHtml(item, dayIndex, itemIndex) {
-            // 由於 map=... 網址太長，這裡使用一個較短的 Google Maps 搜尋連結
-            // 使用 encodeURIComponent 確保中文和特殊字元正確編碼
-            const mapLink = item.map ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('日本大阪 ' + item.map)}" target="_blank" class="text-xs text-blue-600 hover:text-blue-800 font-medium ml-2 inline-flex items-center"><i class="fas fa-map-pin mr-1"></i> 地圖</a>` : '';
+            // 確保 Google Maps 連結使用 encodeURIComponent
+            const encodedQuery = encodeURIComponent('日本大阪 ' + (item.map || item.desc.replace(/<br>/g, ' ')));
+            const mapLink = item.map ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodedQuery}" target="_blank" class="text-xs text-blue-600 hover:text-blue-800 font-medium ml-2 inline-flex items-center"><i class="fas fa-map-pin mr-1"></i> 地圖</a>` : '';
             const linkBtn = item.link && item.link !== '#' ? `<a href="${item.link}" target="_blank" class="text-xs text-teal-600 hover:text-teal-800 font-medium ml-2 inline-flex items-center"><i class="fas fa-link mr-1"></i> 連結</a>` : '';
             
             let timeDisplay = item.time;
@@ -799,7 +796,6 @@
 
         // ====================================================================
         // 行程編輯/新增 Modal 邏輯 (Item CRUD)
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         /**
@@ -918,7 +914,6 @@
         
         // ====================================================================
         // 行程日標題編輯 Modal 邏輯 (Day Title CRUD)
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         /**
@@ -1040,7 +1035,8 @@
             } else {
                 const summaryList = extractedTransport.map(item => {
                     // 連結到地圖並跳轉到行程表該項目
-                    const mapLink = item.map ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('日本大阪 ' + item.map)}" target="_blank" class="text-xs text-blue-600 hover:text-blue-800 font-medium ml-2 inline-flex items-center"><i class="fas fa-map-pin mr-1"></i> 地圖</a>` : '';
+                    const encodedQuery = encodeURIComponent('日本大阪 ' + (item.map || item.desc.replace(/<br>/g, ' ')));
+                    const mapLink = item.map ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodedQuery}" target="_blank" class="text-xs text-blue-600 hover:text-blue-800 font-medium ml-2 inline-flex items-center"><i class="fas fa-map-pin mr-1"></i> 地圖</a>` : '';
                     
                     return `
                         <li class="flex justify-between items-center py-2 border-b border-gray-100 group">
@@ -1155,7 +1151,6 @@
 
         // ====================================================================
         // WALLET 頁面
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         function calculateTWD(jpy) {
@@ -1330,7 +1325,6 @@
         
         // ====================================================================
         // LISTS 頁面
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         function saveChecklist() {
@@ -1338,10 +1332,13 @@
         }
 
         function renderListsPage() {
-            const categories = [...new Set(checklistItems.map(item => item.category))];
+            // 確保 checklistItems 是有項目的，否則無法計算 categories
+            const itemsToRender = checklistItems.length > 0 ? checklistItems : initialChecklist;
+
+            const categories = [...new Set(itemsToRender.map(item => item.category))];
             
             let checklistHtml = categories.map(category => {
-                const items = checklistItems.filter(item => item.category === category);
+                const items = itemsToRender.filter(item => item.category === category);
                 const listItemsHtml = items.map(item => `
                     <li class="flex items-center justify-between py-2 border-b border-gray-100 last:border-b-0 group">
                         <div class="flex items-center">
@@ -1442,7 +1439,6 @@
 
         // ====================================================================
         // INFO 頁面
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         function saveMemo() {
@@ -1471,6 +1467,9 @@
             localStorage.removeItem(LS_PREFIX + 'checklistItems' + '_' + userId);
             localStorage.removeItem(LS_PREFIX + 'memoContent' + '_' + userId);
             localStorage.removeItem(LS_PREFIX + 'tripInfo' + '_' + userId);
+            
+            // 刪除 userId 確保下次載入時會生成新的初始數據
+            localStorage.removeItem(LS_PREFIX + 'userId'); 
             
             alert("所有本地資料已清除。頁面將重新載入。");
             closeResetConfirmModal(); // 關閉 Modal
@@ -1564,7 +1563,7 @@
                 
                 <div class="muji-card p-5 mb-6">
                     <h3 class="text-lg font-semibold text-gray-700 mb-3 border-b border-gray-100 pb-1">關於本指南</h3>
-                    <p class="text-sm text-gray-700">版本：1.5 (支援所有數據持久化)</p>
+                    <p class="text-sm text-gray-700">版本：1.6 (修正 LocalStorage 穩定性問題)</p>
                     <p class="text-sm text-gray-700">設計目標：輕量化、視覺化、高互動性的單頁式旅遊行程管理。</p>
                     <p class="xs text-gray-500 mt-3">當前使用者 ID: ${userId}</p>
                 </div>
@@ -1582,7 +1581,6 @@
         
         // ====================================================================
         // 交通指南編輯 Modal 邏輯 (Transport Guide CRUD)
-        // ** 已加入 saveToLS **
         // ====================================================================
 
         window.openEditTransportModal = function(index) {
@@ -1670,7 +1668,6 @@
         
         // ====================================================================
         // NEW: 美食清單 CRUD 邏輯
-        // ** 已加入 saveToLS **
         // ====================================================================
         
         // --- Food Item CRUD ---
@@ -1790,11 +1787,8 @@
                 return;
             }
 
-            let currentItems = [];
             if (mode === 'edit' && index >= 0) {
-                // 編輯模式：保留原有的美食列表
-                currentItems = tripInfo.foodRecommendations[index].items;
-                // 更新城市/地區名稱
+                // 編輯模式：保留原有的美食列表，更新城市/地區名稱
                 tripInfo.foodRecommendations[index].city = newCity;
                 tripInfo.foodRecommendations[index].area = newArea;
 
